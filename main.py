@@ -1,8 +1,7 @@
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from utils import load_plant_images_multiple, add_salt_pepper_noise_rgb, evaluate_denoising
+from utils import load_plant_images_multiple, add_salt_pepper_noise_rgb, evaluate_denoising, apply_median_filter_rgb
 import numpy as np
-from utils import apply_median_filter_rgb
 import torch
 import torch.nn as nn
 import torch.optim as optim
