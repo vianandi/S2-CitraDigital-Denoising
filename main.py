@@ -200,7 +200,7 @@ class CAESC(nn.Module):
         return torch.sigmoid(out)
 
 # Training function
-def train_model(model, train_loader, val_loader, model_name, epochs=15, lr=0.001):
+def train_model(model, train_loader, val_loader, model_name, epochs=30, lr=0.001):
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
@@ -277,13 +277,13 @@ print(f"UNet Parameters: {count_parameters(unet):,}")
 print(f"CAE-SC Parameters: {count_parameters(cae_sc):,}")
 
 # Train CAE
-train_model(cae, train_loader, val_loader, "CAE", epochs=15)
+train_model(cae, train_loader, val_loader, "CAE", epochs=30)
 
 # Train UNet
-train_model(unet, train_loader, val_loader, "UNet", epochs=15)
+train_model(unet, train_loader, val_loader, "UNet", epochs=30)
 
 # Train CAE-SC
-train_model(cae_sc, train_loader, val_loader, "CAE-SC", epochs=15)
+train_model(cae_sc, train_loader, val_loader, "CAE-SC", epochs=30)
 
 # 5. Evaluasi Visual
 print("\n📊 Generating predictions...")
