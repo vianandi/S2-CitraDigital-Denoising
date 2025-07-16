@@ -89,3 +89,14 @@ def apply_median_filter_rgb(images, ksize=3):
             filtered[:, :, c] = cv2.medianBlur((img[:, :, c] * 255).astype(np.uint8), ksize)
         filtered_images.append(filtered.astype(np.float32) / 255.)
     return np.array(filtered_images)
+
+def add_gaussian_noise(image, mean=0.0, var=0.01):
+    """
+    Menambahkan derau Gaussian ke gambar.
+    """
+    row, col, ch = image.shape
+    sigma = var**0.5
+    gauss = np.random.normal(mean, sigma, (row, col, ch))
+    gauss = gauss.reshape(row, col, ch)
+    noisy = image + gauss
+    return np.clip(noisy, 0.0, 1.0).astype(np.float32)

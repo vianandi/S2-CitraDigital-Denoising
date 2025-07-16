@@ -119,6 +119,72 @@ class UNet(nn.Module):
         
         return torch.sigmoid(self.final(dec1))
 
+class CAESC(nn.Module):
+    def __init__(self):
+        super(CAESC, self).__init__()
+        # Encoder
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        self.enc3 = nn.Sequential(
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        self.pool = nn.MaxPool2d(2, 2)
+        
+        # Bottleneck (Decoder start)
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Decoder with Skip Connections
+        self.upconv2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(128 + 64, 64, 3, padding=1), # Concatenate skip connection
+            nn.ReLU(inplace=True)
+        )
+        
+        self.upconv1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(64 + 32, 32, 3, padding=1), # Concatenate skip connection
+            nn.ReLU(inplace=True)
+        )
+        
+        self.final = nn.Conv2d(32, 3, 3, padding=1)
+    
+    def forward(self, x):
+        # Encoder
+        e1 = self.enc1(x)
+        p1 = self.pool(e1)
+        
+        e2 = self.enc2(p1)
+        p2 = self.pool(e2)
+        
+        e3 = self.enc3(p2)
+        p3 = self.pool(e3)
+        
+        # Decoder
+        d3 = self.dec3(p3)
+        
+        up2 = self.upconv2(d3)
+        cat2 = torch.cat([up2, e3], dim=1) # Skip connection from e3
+        d2 = self.dec2(cat2)
+        
+        up1 = self.upconv1(d2)
+        cat1 = torch.cat([up1, e2], dim=1) # Skip connection from e2
+        d1 = self.dec1(cat1)
+
+        # Tidak ada skip connection terakhir untuk mempertahankan fleksibilitas denoising
+        out = self.final(d1)
+        
+        return torch.sigmoid(out)
+
 # Training function
 def train_model(model, train_loader, val_loader, model_name, epochs=30, lr=0.001):
     criterion = nn.MSELoss()
@@ -190,9 +256,11 @@ val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 print("\n🏗️  Building models...")
 cae = CAE().to(device)
 unet = UNet().to(device)
+cae_sc = CAESC().to(device)
 
 print(f"CAE Parameters: {count_parameters(cae):,}")
 print(f"UNet Parameters: {count_parameters(unet):,}")
+print(f"CAE-SC Parameters: {count_parameters(cae_sc):,}")
 
 # Train CAE
 train_model(cae, train_loader, val_loader, "CAE", epochs=30)
@@ -200,15 +268,20 @@ train_model(cae, train_loader, val_loader, "CAE", epochs=30)
 # Train UNet
 train_model(unet, train_loader, val_loader, "UNet", epochs=30)
 
+# Train CAE-SC
+train_model(cae_sc, train_loader, val_loader, "CAE-SC", epochs=30)
+
 # 5. Evaluasi Visual
 print("\n📊 Generating predictions...")
 cae.eval()
 unet.eval()
+cae_sc.eval()
 
 with torch.no_grad():
     test_noisy = x_val_noisy[:5].to(device)
     cae_decoded = cae(test_noisy).cpu().permute(0, 2, 3, 1).numpy()
     unet_decoded = unet(test_noisy).cpu().permute(0, 2, 3, 1).numpy()
+    cae_sc_results = cae_sc(test_noisy).cpu().permute(0, 2, 3, 1).numpy()
 
 # Convert back to numpy for visualization
 test_noisy_np = x_val_noisy[:5].permute(0, 2, 3, 1).numpy()
@@ -236,6 +309,12 @@ for i in range(5):
     plt.imshow(np.clip(cae_decoded[i], 0, 1))
     ax.set_title("CAE")
     plt.axis('off')
+    
+    # CAE-SC
+    ax = plt.subplot(5, 5, i + 16)
+    plt.imshow(np.clip(cae_sc_results[i], 0, 1))
+    ax.set_title("CAE-SC")
+    plt.axis('off')
 
     # UNet
     ax = plt.subplot(5, 5, i + 16)
@@ -258,6 +337,7 @@ with torch.no_grad():
     test_batch = x_val_noisy[:20].to(device)
     cae_results = cae(test_batch).cpu().permute(0, 2, 3, 1).numpy()
     unet_results = unet(test_batch).cpu().permute(0, 2, 3, 1).numpy()
+    cae_sc_results = cae_sc(test_batch).cpu().permute(0, 2, 3, 1).numpy()
     
 test_clean_batch = x_val[:20].permute(0, 2, 3, 1).numpy()
 test_noisy_batch = x_val_noisy[:20].permute(0, 2, 3, 1).numpy()
@@ -266,13 +346,16 @@ psnr_score_cae, ssim_score_cae = evaluate_denoising(test_clean_batch, cae_result
 psnr_score_unet, ssim_score_unet = evaluate_denoising(test_clean_batch, unet_results)
 median_full = apply_median_filter_rgb(test_noisy_batch)
 psnr_med, ssim_med = evaluate_denoising(test_clean_batch, median_full)
+psnr_score_cae_sc, ssim_score_cae_sc = evaluate_denoising(test_clean_batch, cae_sc_results)
 
 print(f"Median Filter - PSNR: {psnr_med:.2f}, SSIM: {ssim_med:.4f}")
 print(f"CAE           - PSNR: {psnr_score_cae:.2f}, SSIM: {ssim_score_cae:.4f}")
+print(f"CAE-SC        - PSNR: {psnr_score_cae_sc:.2f}, SSIM: {ssim_score_cae_sc:.4f}")
 print(f"UNet          - PSNR: {psnr_score_unet:.2f}, SSIM: {ssim_score_unet:.4f}")
 
 # Save models
 print("\n💾 Saving models...")
 torch.save(cae.state_dict(), 'cae_model.pth')
 torch.save(unet.state_dict(), 'unet_model.pth')
+torch.save(cae_sc.state_dict(), 'cae_sc_model.pth')
 print("Models saved successfully!")
