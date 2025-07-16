@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from utils import load_plant_images, load_plant_images_multiple, add_salt_pepper_noise_rgb, evaluate_denoising
+from utils import load_plant_images_multiple, add_salt_pepper_noise_rgb, evaluate_denoising
 import numpy as np
 from utils import apply_median_filter_rgb
 import torch
@@ -9,6 +9,10 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
 from tqdm import tqdm
+import os  # Add this import
+
+# Create results directory if it doesn't exist
+os.makedirs('results', exist_ok=True)
 
 # PyTorch GPU Configuration
 print("🔧 Configuring PyTorch GPU...")
@@ -146,47 +150,58 @@ class CAESC(nn.Module):
         # Decoder with Skip Connections
         self.upconv2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         self.dec2 = nn.Sequential(
-            nn.Conv2d(128 + 64, 64, 3, padding=1), # Concatenate skip connection
+            nn.Conv2d(128 + 128, 64, 3, padding=1),  # Fixed: skip connection from enc3 (128 channels)
             nn.ReLU(inplace=True)
         )
         
         self.upconv1 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         self.dec1 = nn.Sequential(
-            nn.Conv2d(64 + 32, 32, 3, padding=1), # Concatenate skip connection
+            nn.Conv2d(64 + 64, 32, 3, padding=1),  # Fixed: skip connection from enc2 (64 channels)
             nn.ReLU(inplace=True)
         )
         
-        self.final = nn.Conv2d(32, 3, 3, padding=1)
+        self.upconv0 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.dec0 = nn.Sequential(
+            nn.Conv2d(32 + 32, 16, 3, padding=1),  # Fixed: skip connection from enc1 (32 channels)
+            nn.ReLU(inplace=True)
+        )
+        
+        self.final = nn.Conv2d(16, 3, 3, padding=1)
     
     def forward(self, x):
         # Encoder
-        e1 = self.enc1(x)
-        p1 = self.pool(e1)
+        e1 = self.enc1(x)           # 32 channels
+        p1 = self.pool(e1)          # downsample
         
-        e2 = self.enc2(p1)
-        p2 = self.pool(e2)
+        e2 = self.enc2(p1)          # 64 channels
+        p2 = self.pool(e2)          # downsample
         
-        e3 = self.enc3(p2)
-        p3 = self.pool(e3)
+        e3 = self.enc3(p2)          # 128 channels
+        p3 = self.pool(e3)          # downsample
         
-        # Decoder
-        d3 = self.dec3(p3)
+        # Bottleneck
+        d3 = self.dec3(p3)          # 128 channels
         
-        up2 = self.upconv2(d3)
-        cat2 = torch.cat([up2, e3], dim=1) # Skip connection from e3
-        d2 = self.dec2(cat2)
+        # Decoder with skip connections
+        up2 = self.upconv2(d3)      # upsample
+        cat2 = torch.cat([up2, e3], dim=1)  # Skip connection: 128 + 128 = 256
+        d2 = self.dec2(cat2)        # 64 channels
         
-        up1 = self.upconv1(d2)
-        cat1 = torch.cat([up1, e2], dim=1) # Skip connection from e2
-        d1 = self.dec1(cat1)
-
-        # Tidak ada skip connection terakhir untuk mempertahankan fleksibilitas denoising
-        out = self.final(d1)
+        up1 = self.upconv1(d2)      # upsample
+        cat1 = torch.cat([up1, e2], dim=1)  # Skip connection: 64 + 64 = 128
+        d1 = self.dec1(cat1)        # 32 channels
+        
+        up0 = self.upconv0(d1)      # upsample
+        cat0 = torch.cat([up0, e1], dim=1)  # Skip connection: 32 + 32 = 64
+        d0 = self.dec0(cat0)        # 16 channels
+        
+        # Final output
+        out = self.final(d0)        # 3 channels
         
         return torch.sigmoid(out)
 
 # Training function
-def train_model(model, train_loader, val_loader, model_name, epochs=30, lr=0.001):
+def train_model(model, train_loader, val_loader, model_name, epochs=15, lr=0.001):
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
@@ -263,13 +278,13 @@ print(f"UNet Parameters: {count_parameters(unet):,}")
 print(f"CAE-SC Parameters: {count_parameters(cae_sc):,}")
 
 # Train CAE
-train_model(cae, train_loader, val_loader, "CAE", epochs=30)
+train_model(cae, train_loader, val_loader, "CAE", epochs=15)
 
 # Train UNet
-train_model(unet, train_loader, val_loader, "UNet", epochs=30)
+train_model(unet, train_loader, val_loader, "UNet", epochs=15)
 
 # Train CAE-SC
-train_model(cae_sc, train_loader, val_loader, "CAE-SC", epochs=30)
+train_model(cae_sc, train_loader, val_loader, "CAE-SC", epochs=15)
 
 # 5. Evaluasi Visual
 print("\n📊 Generating predictions...")
@@ -290,46 +305,77 @@ test_clean_np = x_val[:5].permute(0, 2, 3, 1).numpy()
 # Terapkan Median Filter ke data uji
 median_filtered_imgs = apply_median_filter_rgb(test_noisy_np)
 
-plt.figure(figsize=(20, 8))
+# Create visualization with proper layout (6 rows x 5 columns)
+plt.figure(figsize=(25, 18))
 for i in range(5):
     # Noisy
-    ax = plt.subplot(5, 5, i + 1)
+    ax = plt.subplot(6, 5, i + 1)
     plt.imshow(np.clip(test_noisy_np[i], 0, 1))
-    ax.set_title("Noisy")
+    ax.set_title("Noisy", fontsize=12, fontweight='bold')
     plt.axis('off')
 
     # Median
-    ax = plt.subplot(5, 5, i + 6)
+    ax = plt.subplot(6, 5, i + 6)
     plt.imshow(np.clip(median_filtered_imgs[i], 0, 1))
-    ax.set_title("Median")
+    ax.set_title("Median Filter", fontsize=12, fontweight='bold')
     plt.axis('off')
 
     # CAE
-    ax = plt.subplot(5, 5, i + 11)
+    ax = plt.subplot(6, 5, i + 11)
     plt.imshow(np.clip(cae_decoded[i], 0, 1))
-    ax.set_title("CAE")
+    ax.set_title("CAE", fontsize=12, fontweight='bold')
     plt.axis('off')
     
     # CAE-SC
-    ax = plt.subplot(5, 5, i + 16)
+    ax = plt.subplot(6, 5, i + 16)
     plt.imshow(np.clip(cae_sc_results[i], 0, 1))
-    ax.set_title("CAE-SC")
+    ax.set_title("CAE-SC", fontsize=12, fontweight='bold')
     plt.axis('off')
 
     # UNet
-    ax = plt.subplot(5, 5, i + 16)
+    ax = plt.subplot(6, 5, i + 21)
     plt.imshow(np.clip(unet_decoded[i], 0, 1))
-    ax.set_title("UNet")
+    ax.set_title("UNet", fontsize=12, fontweight='bold')
     plt.axis('off')
 
     # Ground Truth
-    ax = plt.subplot(5, 5, i + 21)
+    ax = plt.subplot(6, 5, i + 26)
     plt.imshow(np.clip(test_clean_np[i], 0, 1))
-    ax.set_title("Ground Truth")
+    ax.set_title("Ground Truth", fontsize=12, fontweight='bold')
     plt.axis('off')
 
-plt.tight_layout()
+plt.tight_layout(pad=1.0)
+plt.savefig('results/denoising_comparison.png', dpi=300, bbox_inches='tight')
 plt.show()
+
+# Create individual method comparison
+methods = ['Median Filter', 'CAE', 'CAE-SC', 'UNet']
+results = [median_filtered_imgs, cae_decoded, cae_sc_results, unet_decoded]
+
+for method_idx, (method_name, method_results) in enumerate(zip(methods, results)):
+    plt.figure(figsize=(20, 8))
+    for i in range(5):
+        # Original noisy
+        ax = plt.subplot(3, 5, i + 1)
+        plt.imshow(np.clip(test_noisy_np[i], 0, 1))
+        ax.set_title("Noisy Image", fontsize=12, fontweight='bold')
+        plt.axis('off')
+        
+        # Denoised result
+        ax = plt.subplot(3, 5, i + 6)
+        plt.imshow(np.clip(method_results[i], 0, 1))
+        ax.set_title(f"{method_name} Result", fontsize=12, fontweight='bold')
+        plt.axis('off')
+        
+        # Ground truth
+        ax = plt.subplot(3, 5, i + 11)
+        plt.imshow(np.clip(test_clean_np[i], 0, 1))
+        ax.set_title("Ground Truth", fontsize=12, fontweight='bold')
+        plt.axis('off')
+    
+    plt.tight_layout(pad=1.0)
+    plt.savefig(f'results/{method_name.lower().replace(" ", "_")}_comparison.png', dpi=300, bbox_inches='tight')
+    plt.show()
 
 # 6. Evaluasi PSNR dan SSIM
 print("\n📈 Evaluating model performance...")
@@ -353,9 +399,95 @@ print(f"CAE           - PSNR: {psnr_score_cae:.2f}, SSIM: {ssim_score_cae:.4f}")
 print(f"CAE-SC        - PSNR: {psnr_score_cae_sc:.2f}, SSIM: {ssim_score_cae_sc:.4f}")
 print(f"UNet          - PSNR: {psnr_score_unet:.2f}, SSIM: {ssim_score_unet:.4f}")
 
+# Create performance comparison chart
+methods = ['Median Filter', 'CAE', 'CAE-SC', 'UNet']
+psnr_scores = [psnr_med, psnr_score_cae, psnr_score_cae_sc, psnr_score_unet]
+ssim_scores = [ssim_med, ssim_score_cae, ssim_score_cae_sc, ssim_score_unet]
+
+# PSNR and SSIM comparison
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+# PSNR comparison
+bars1 = ax1.bar(methods, psnr_scores, color=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4'])
+ax1.set_title('PSNR Performance Comparison', fontsize=14, fontweight='bold')
+ax1.set_ylabel('PSNR (dB)', fontsize=12)
+ax1.set_ylim(0, max(psnr_scores) * 1.1)
+ax1.grid(axis='y', alpha=0.3)
+
+# Add value labels on bars
+for bar, score in zip(bars1, psnr_scores):
+    height = bar.get_height()
+    ax1.text(bar.get_x() + bar.get_width()/2., height + 0.5, f'{score:.2f}', ha='center', va='bottom', fontweight='bold')
+
+# SSIM comparison
+bars2 = ax2.bar(methods, ssim_scores, color=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4'])
+ax2.set_title('SSIM Performance Comparison', fontsize=14, fontweight='bold')
+ax2.set_ylabel('SSIM', fontsize=12)
+ax2.set_ylim(0, 1.1)
+ax2.grid(axis='y', alpha=0.3)
+
+# Add value labels on bars
+for bar, score in zip(bars2, ssim_scores):
+    height = bar.get_height()
+    ax2.text(bar.get_x() + bar.get_width()/2., height + 0.02, f'{score:.4f}', ha='center', va='bottom', fontweight='bold')
+
+plt.tight_layout()
+plt.savefig('results/performance_comparison.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Create combined performance table
+performance_data = {
+    'Method': methods,
+    'PSNR (dB)': psnr_scores,
+    'SSIM': ssim_scores
+}
+
+# Create table visualization
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.axis('tight')
+ax.axis('off')
+
+table_data = []
+for i, method in enumerate(methods):
+    table_data.append([method, f"{psnr_scores[i]:.2f}", f"{ssim_scores[i]:.4f}"])
+
+table = ax.table(cellText=table_data,
+                colLabels=['Method', 'PSNR (dB)', 'SSIM'],
+                cellLoc='center',
+                loc='center')
+
+table.auto_set_font_size(False)
+table.set_fontsize(12)
+table.scale(1.2, 2)
+
+# Color the header (3 columns: Method, PSNR, SSIM)
+for i in range(3):
+    table[(0, i)].set_facecolor('#E8E8E8')
+    table[(0, i)].set_text_props(weight='bold')
+
+# Color the best performance cells
+best_psnr_idx = np.argmax(psnr_scores)
+best_ssim_idx = np.argmax(ssim_scores)
+
+table[(best_psnr_idx + 1, 1)].set_facecolor('#96CEB4')
+table[(best_ssim_idx + 1, 2)].set_facecolor('#96CEB4')
+
+plt.title('Denoising Performance Summary', fontsize=16, fontweight='bold', pad=20)
+plt.savefig('results/performance_table.png', dpi=300, bbox_inches='tight')
+plt.show()
+
 # Save models
 print("\n💾 Saving models...")
 torch.save(cae.state_dict(), 'cae_model.pth')
 torch.save(unet.state_dict(), 'unet_model.pth')
 torch.save(cae_sc.state_dict(), 'cae_sc_model.pth')
 print("Models saved successfully!")
+
+print("\n🎯 All results saved to 'results/' directory:")
+print("  - denoising_comparison.png (Complete comparison)")
+print("  - median_filter_comparison.png (Median filter results)")
+print("  - cae_comparison.png (CAE results)")
+print("  - cae-sc_comparison.png (CAE-SC results)")
+print("  - unet_comparison.png (UNet results)")
+print("  - performance_comparison.png (PSNR & SSIM charts)")
+print("  - performance_table.png (Performance summary table)")
