@@ -1,0 +1,12 @@
+transformers
+datasets
+scikit-learn
+scikit-image
+pandas
+matplotlib
+torch
+tqdm
+sentencepiece
+opencv-python
+numpy
+tensorflow
